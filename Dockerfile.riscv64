@@ -1,0 +1,62 @@
+# k3s riscv64 交叉编译构建
+#
+# 基于 tonistiigi/xx 在宿主机架构（amd64/arm64）上原生运行构建，产出
+# linux/riscv64 二进制，无需 riscv64 模拟或真机。
+#
+# 使用方法：
+#   docker build -f Dockerfile.riscv64 -t k3s-riscv64 .
+#   docker run --rm -v "$PWD/riscv64-out":/out k3s-riscv64
+#
+# 产物（写入 riscv64-out/）：
+#   bin/   - 完整 k3s 运行组件（多调用 k3s + containerd、runc、cni、kubectl 等）
+#   dist/  - 打包后的单调用 k3s-riscv64 二进制（自包含数据包）
+#
+# 可选构建参数：
+#   GOLANG          Go 工具链基础镜像，默认 golang:1.22.8-alpine3.19（与 k3s dapper 一致）
+#   GOPROXY         模块代理，默认 goproxy.cn（国内网络）
+#   VERSION_GOLANG  k8s 上游 golang 元数据（仅影响版本字符串，默认 go1.20.12）
+
+ARG GOLANG=golang:1.22.8-alpine3.19
+ARG XX=tonistiigi/xx:1.6.1
+
+FROM --platform=$BUILDPLATFORM ${XX} AS xx
+
+FROM --platform=$BUILDPLATFORM ${GOLANG} AS k3s-riscv64
+COPY --from=xx / /
+
+ARG TARGETOS=linux
+ARG TARGETARCH=riscv64
+ARG GOPROXY=https://goproxy.cn,direct
+ENV TARGETOS=$TARGETOS \
+    TARGETARCH=$TARGETARCH \
+    STATIC_BUILD=true \
+    SELINUX=true \
+    GOPROXY=$GOPROXY \
+    SRC_DIR=/go/src/github.com/k3s-io/k3s
+
+WORKDIR ${SRC_DIR}
+
+# 构建宿主（原生执行）所需工具。clang/lld 是原生跨架构编译器：
+# xx-go 找不到交叉 gcc 时会回退到 clang（在宿主机上原生运行，直接产出 riscv64 目标码）。
+RUN apk -U --no-cache add bash git file curl wget ca-certificates jq tar zip \
+    squashfs-tools coreutils make zstd pigz alpine-sdk yq gawk linux-headers \
+    clang lld
+
+# riscv64 目标工具链与静态库（与上游 k3s CI 相同集合）
+RUN xx-apk add gcc musl-dev linux-headers zlib-dev zlib-static libseccomp \
+    libseccomp-dev libseccomp-static sqlite-dev sqlite-static libselinux \
+    libselinux-dev btrfs-progs-dev btrfs-progs-static
+
+# k8s v1.28.x 上游 golang 元数据：默认值避免构建期访问网络
+ARG VERSION_GOLANG=go1.20.12
+ENV VERSION_GOLANG=${VERSION_GOLANG}
+
+COPY . .
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GO=xx-go ./scripts/download \
+ && GO=xx-go ./scripts/build \
+ && GO=xx-go ./scripts/package-cli
+
+CMD ["sh", "-c", "mkdir -p /out/bin /out/dist && cp -a bin/. /out/bin/ && (cp -a dist/. /out/dist/ 2>/dev/null || true) && echo 'riscv64 binaries copied to /out'"]
