@@ -14,7 +14,7 @@
 # 可选构建参数：
 #   GOLANG          Go 工具链基础镜像，默认 golang:1.22.8-alpine3.19（与 k3s dapper 一致）
 #   GOPROXY         模块代理，默认 goproxy.cn（国内网络）
-#   VERSION_GOLANG  k8s 上游 golang 元数据（仅影响版本字符串，默认 go1.20.12）
+#   VERSION_GOLANG  k8s 上游 golang 元数据（k3s 启动时校验 runtime golang 版本，默认 go1.22.8）
 
 ARG GOLANG=golang:1.22.8-alpine3.19
 ARG XX=tonistiigi/xx:1.6.1
@@ -47,8 +47,9 @@ RUN xx-apk add gcc musl-dev linux-headers zlib-dev zlib-static libseccomp \
     libseccomp-dev libseccomp-static sqlite-dev sqlite-static libselinux \
     libselinux-dev btrfs-progs-dev btrfs-progs-static
 
-# k8s v1.28.x 上游 golang 元数据：默认值避免构建期访问网络
-ARG VERSION_GOLANG=go1.20.12
+# k8s v1.28.15 上游 golang 元数据（go1.22.8，与 Go 工具链一致；
+# k3s 启动时用它校验 runtime golang 版本，见 pkg/cli/cmds/golang.go）
+ARG VERSION_GOLANG=go1.22.8
 ENV VERSION_GOLANG=${VERSION_GOLANG}
 
 COPY . .
