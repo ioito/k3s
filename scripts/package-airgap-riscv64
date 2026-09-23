@@ -1,0 +1,76 @@
+#!/bin/bash
+# k3s v1.28.5 airgap 镜像打包脚本（官方 scripts/package-airgap 的 riscv64 适配版）
+#
+# 用法: ./scripts/package-airgap-riscv64
+# 产物: dist/artifacts/k3s-airgap-images-riscv64.tar{,.gz,.zst}
+#
+# 背景与替代方案（2026-09 实测验证，v1.28.5+k3s1 官方 8 镜像）:
+#   riscv64 生态缺口比 v1.28.15 更大：官方 8 镜像中仅 busybox 有 riscv64 变体，
+#   其余 7 个均需自建/重标：
+#     local-path-provisioner v0.0.24  官方无 riscv64（v0.0.30 起才有）-> 自建
+#     coredns 1.10.1                  官方无 riscv64（1.11 起才有）    -> 自建
+#     traefik 2.10.5                  官方无 riscv64（2.11 起才有）    -> 自建
+#     klipper-helm v0.8.2             官方无 riscv64                  -> 自建
+#     klipper-lb v0.4.4               官方无 riscv64                  -> 自建
+#     metrics-server v0.6.3           官方无 riscv64                  -> 自建
+#     mirrored-pause:3.6              官方无 riscv64                  -> busybox 自建
+#     mirrored-library-busybox:1.36.1 官方有 riscv64                  -> 直接拉取
+#   自建镜像源码见 scripts/riscv64-images/ 下 Dockerfile.riscv64，
+#   由发布 workflow 预构建到本地（docker buildx --platform linux/riscv64 --load），
+#   本脚本 save 时直接命中。
+#
+# 网络说明: 默认经 docker.m.daocloud.io 镜像加速拉取（registry-1.docker.io 直连常不通）；
+#   能直连时设 MIRROR= 走官方源。
+set -e
+
+cd "$(dirname "$0")/.."
+. ./scripts/version.sh
+
+export ARCH=riscv64
+DIST=dist/artifacts
+mkdir -p "${DIST}"
+MIRROR=${MIRROR:-docker.m.daocloud.io}
+
+# 从镜像加速(或官方源)拉 riscv64 镜像并重标为 k3s 引用名
+pull_and_tag() {
+    local upstream="$1" target="$2"
+    if [ -n "${MIRROR}" ]; then
+        docker pull --platform linux/riscv64 "${MIRROR}/${upstream}"
+        docker tag "${MIRROR}/${upstream}" "${target}"
+    else
+        docker pull --platform linux/riscv64 "${upstream}"
+        docker tag "${upstream}" "${target}"
+    fi
+}
+
+pull_and_tag library/busybox:1.36.1                docker.io/rancher/mirrored-library-busybox:1.36.1
+
+# pause: 无官方 riscv64 变体，用 busybox 自建等效沙箱镜像（需 buildx + QEMU 仿真）
+BUILDCTX=$(mktemp -d)
+trap 'rm -rf "${BUILDCTX}"' EXIT
+if [ -n "${MIRROR}" ]; then FROM_IMG="${MIRROR}/library/busybox:1.36.1"; else FROM_IMG="busybox:1.36.1"; fi
+cat > "${BUILDCTX}/Dockerfile" <<EOF
+FROM ${FROM_IMG}
+CMD ["sleep", "infinity"]
+EOF
+docker buildx build --platform linux/riscv64 -t docker.io/rancher/mirrored-pause:3.6 --load "${BUILDCTX}" >/dev/null
+
+# 保存 + 压缩（同官方格式：.tar / .tar.zst / .tar.gz）
+# 注：local-path/coredns/traefik/klipper-helm/klipper-lb/metrics-server 由发布 workflow
+# 预构建（scripts/riscv64-images/ 下 Dockerfile.riscv64），此处直接 save。
+docker save \
+    docker.io/rancher/local-path-provisioner:v0.0.24 \
+    docker.io/rancher/mirrored-coredns-coredns:1.10.1 \
+    docker.io/rancher/mirrored-library-busybox:1.36.1 \
+    docker.io/rancher/mirrored-library-traefik:2.10.5 \
+    docker.io/rancher/mirrored-pause:3.6 \
+    docker.io/rancher/klipper-helm:v0.8.2-build20230815 \
+    docker.io/rancher/klipper-lb:v0.4.4 \
+    docker.io/rancher/mirrored-metrics-server:v0.6.3 \
+    -o "${DIST}/k3s-airgap-images-${ARCH}.tar"
+
+zstd --no-progress -T0 -16 -f --long=25 "${DIST}/k3s-airgap-images-${ARCH}.tar" \
+    -o "${DIST}/k3s-airgap-images-${ARCH}.tar.zst"
+gzip -c "${DIST}/k3s-airgap-images-${ARCH}.tar" > "${DIST}/k3s-airgap-images-${ARCH}.tar.gz"
+
+echo "完成: ${DIST}/k3s-airgap-images-${ARCH}.tar{,.gz,.zst}"

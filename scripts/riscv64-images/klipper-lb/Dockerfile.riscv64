@@ -1,0 +1,11 @@
+# klipper-lb v0.4.4 riscv64 构建
+#
+# 官方 package/Dockerfile 原样（零编译阶段：alpine + iptables/nftables + shell entry），
+# riscv64 直接 buildx 原样构建即可。
+FROM alpine:3.20
+ARG BUILDDATE
+LABEL buildDate=$BUILDDATE
+RUN apk --no-cache upgrade && \
+    apk add -U --no-cache iptables ip6tables nftables
+COPY entry /usr/bin/
+CMD ["entry"]

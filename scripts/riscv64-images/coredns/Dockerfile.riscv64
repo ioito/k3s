@@ -1,0 +1,21 @@
+# coredns v1.10.1 riscv64 构建
+#
+# 官方 coredns/coredns:1.10.1 无 riscv64 变体（1.11 起才有），从上游源码自建：
+# 纯 Go 根包 go build + alpine runtime（官方镜像为 scratch + ca-cert，alpine
+# 自带 ca-certificates，行为等价且更省事）。
+ARG GOLANG=golang:1.22.8-alpine3.19
+FROM --platform=$BUILDPLATFORM ${GOLANG} as build
+WORKDIR /go/src/github.com/coredns/coredns
+ARG PROXY=
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV http_proxy=$PROXY https_proxy=$PROXY HTTP_PROXY=$PROXY HTTPS_PROXY=$PROXY \
+    GOPROXY=$GOPROXY
+RUN apk add -U --no-cache git ca-certificates make \
+ && git -c http.sslVerify=false clone --depth 1 --branch v1.10.1 https://github.com/coredns/coredns . \
+ && CGO_ENABLED=0 GOARCH=riscv64 go build -o coredns .
+
+FROM --platform=$TARGETPLATFORM alpine:3.20
+RUN apk add -U --no-cache ca-certificates
+COPY --from=build /go/src/github.com/coredns/coredns/coredns /coredns
+EXPOSE 53 53/udp
+ENTRYPOINT ["/coredns"]
