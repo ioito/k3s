@@ -78,6 +78,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          cat > /tmp/release-notes.md <<'EOF'
+          k3s riscv64 发布，基于 v1.28.15+k3s1（官方无 riscv64 支持，本 fork 自建）。
+
+          Airgap 镜像说明（riscv64 生态现状）：
+          - rancher/local-path-provisioner:v0.0.30 官方自带 riscv64
+          - coredns/busybox/traefik 用内容等价的官方上游镜像重标为 rancher mirrored 名
+          - pause 官方无 riscv64 变体，用 busybox 自建等效沙箱镜像（重标为 rancher/mirrored-pause:3.6，默认配置即可用）
+          - klipper-helm/klipper-lb/metrics-server 无 riscv64 变体，未包含（riscv64 建议作 agent 节点，metrics-server 可 --disable）
+
+          用法：二进制放入 /usr/local/bin/k3s；airgap 包放入 /var/lib/rancher/k3s/agent/images/ 即可离线安装。
+          EOF
           gh release create "${GITHUB_REF_NAME}" \
             dist/artifacts/k3s-riscv64 \
             dist/artifacts/k3s-airgap-images-riscv64.tar \
@@ -87,12 +98,4 @@ jobs:
             dist/artifacts/sha256sum-riscv64.txt \
             --repo "${{ github.repository }}" \
             --title "${GITHUB_REF_NAME} (riscv64)" \
-            --notes "k3s riscv64 发布，基于 v1.28.15+k3s1（官方无 riscv64 支持，本 fork 自建）。
-
-Airgap 镜像说明（riscv64 生态现状）：
-- rancher/local-path-provisioner:v0.0.30 官方自带 riscv64
-- coredns/busybox/traefik 用内容等价的官方上游镜像重标为 rancher mirrored 名
-- pause 官方无 riscv64 变体，用 busybox 自建等效沙箱镜像（重标为 rancher/mirrored-pause:3.6，默认配置即可用）
-- klipper-helm/klipper-lb/metrics-server 无 riscv64 变体，未包含（riscv64 建议作 agent 节点，metrics-server 可 --disable）
-
-用法：二进制放入 /usr/local/bin/k3s；airgap 包放入 /var/lib/rancher/k3s/agent/images/ 即可离线安装。"
+            --notes-file /tmp/release-notes.md
