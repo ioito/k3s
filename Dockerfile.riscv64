@@ -28,11 +28,16 @@ COPY --from=xx / /
 ARG TARGETOS=linux
 ARG TARGETARCH=riscv64
 ARG GOPROXY=https://goproxy.cn,direct
+ARG PROXY=
 ENV TARGETOS=$TARGETOS \
     TARGETARCH=$TARGETARCH \
     STATIC_BUILD=true \
     SELINUX=true \
     GOPROXY=$GOPROXY \
+    http_proxy=$PROXY \
+    https_proxy=$PROXY \
+    HTTP_PROXY=$PROXY \
+    HTTPS_PROXY=$PROXY \
     SRC_DIR=/go/src/github.com/k3s-io/k3s
 
 WORKDIR ${SRC_DIR}
