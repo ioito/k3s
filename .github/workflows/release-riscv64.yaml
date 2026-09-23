@@ -3,7 +3,7 @@ name: Release riscv64
 # 官方 k3s 式发布：push 形如 v1.28.15+k3s-riscv64.1 的 tag 即触发，
 # 在 GitHub runner 上交叉编译 k3s-riscv64 + 打 airgap 镜像包 + 生成校验和，
 # 自动创建 GitHub Release 并上传资产（对齐 k3s-io/k3s releases 格式）。
-on:
+"on":
   push:
     tags:
       - 'v*+k3s-riscv64*'
