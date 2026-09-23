@@ -11,9 +11,12 @@
 #   pause 官方（rancher 与 registry.k8s.io 各版本）均无 riscv64，故用 busybox 自建等效
 #   沙箱镜像（CMD sleep infinity）并重标为 rancher/mirrored-pause:3.6，kubelet 默认
 #   沙箱镜像名可直接命中，无需改配置；
-#   klipper-helm / klipper-lb / metrics-server 无 riscv64 变体，未包含：
-#     前两者仅 k3s server 需要（riscv64 建议只作 agent 节点）；
-#     metrics-server 可用 --disable metrics-server 关掉。
+#   klipper-helm / klipper-lb / metrics-server 官方亦无 riscv64 变体，
+#   用 scripts/riscv64-images/ 下的 Dockerfile.riscv64 自建（纯 Go / 纯打包，见发布 workflow）：
+#     klipper-helm:  官方 v0.9.3 流程，补丁去 binutils-gold（riscv64 无 gold 链接器）+ CGO_ENABLED=0
+#     klipper-lb:    官方 v0.4.9 原样（alpine+iptables+shell entry，无编译）
+#     metrics-server:官方 v0.7.2 交叉编译（CGO=0），runtime 由无 riscv64 的 distroless 换成 alpine
+#   三个自建镜像与本脚本同 tag 名（rancher/...），save 时直接命中本地镜像。
 #
 # 网络说明: 默认经 docker.m.daocloud.io 镜像加速拉取（registry-1.docker.io 直连常不通）；
 #   能直连时设 MIRROR= 走官方源。
@@ -55,12 +58,17 @@ EOF
 docker buildx build --platform linux/riscv64 -t docker.io/rancher/mirrored-pause:3.6 --load "${BUILDCTX}" >/dev/null
 
 # 保存 + 压缩（同官方格式：.tar / .tar.zst / .tar.gz）
+# 注：klipper-helm / klipper-lb / metrics-server 由发布 workflow 预构建到本地
+# （scripts/riscv64-images/ 下 Dockerfile.riscv64），此处直接 save。
 docker save \
     docker.io/rancher/local-path-provisioner:v0.0.30 \
     docker.io/rancher/mirrored-coredns-coredns:1.11.3 \
     docker.io/rancher/mirrored-library-busybox:1.36.1 \
     docker.io/rancher/mirrored-library-traefik:2.11.10 \
     docker.io/rancher/mirrored-pause:3.6 \
+    docker.io/rancher/klipper-helm:v0.9.3-build20241008 \
+    docker.io/rancher/klipper-lb:v0.4.9 \
+    docker.io/rancher/mirrored-metrics-server:v0.7.2 \
     -o "${DIST}/k3s-airgap-images-${ARCH}.tar"
 
 zstd --no-progress -T0 -16 -f --long=25 "${DIST}/k3s-airgap-images-${ARCH}.tar" \
