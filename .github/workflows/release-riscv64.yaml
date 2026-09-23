@@ -1,0 +1,126 @@
+name: Release riscv64
+
+# 官方 k3s 式发布：push 形如 v1.28.15+k3s-riscv64.1 的 tag 即触发，
+# 在 GitHub runner 上交叉编译 k3s-riscv64 + 打 airgap 镜像包 + 生成校验和，
+# 自动创建 GitHub Release 并上传资产（对齐 k3s-io/k3s releases 格式）。
+"on":
+  push:
+    tags:
+      - 'v*'   # GitHub Actions 模式中 + 是量词，无法字面匹配 +k3s；用 v* + job 级 if 守卫过滤
+
+permissions:
+  contents: write
+
+jobs:
+  release-riscv64:
+    if: startsWith(github.ref_name, 'v1.28.15+k3s-riscv64')   # 只对 riscv64 发布 tag 执行
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # version.sh 需要 git tag 信息
+
+      - name: Set up QEMU (pause 镜像 riscv64 构建仿真)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 1.5) 构建 k3s 官方无 riscv64 变体的组件镜像
+      #      klipper-helm（去 binutils-gold + CGO_ENABLED=0 补丁，官方 v0.9.3 流程）
+      #      klipper-lb（官方 v0.4.9 原样，纯打包）
+      #      metrics-server（官方 v0.7.2 交叉编译，runtime 换 alpine 替代无 riscv64 的 distroless）
+      #      详见 scripts/riscv64-images/ 下 Dockerfile.riscv64
+      - name: Build riscv64 component images
+        run: |
+          docker buildx build --platform linux/riscv64 --load \
+            --build-arg ARCH=riscv64 \
+            -t rancher/klipper-helm:v0.9.3-build20241008 \
+            -f scripts/riscv64-images/klipper-helm/Dockerfile.riscv64 scripts/riscv64-images/klipper-helm
+          docker buildx build --platform linux/riscv64 --load \
+            -t rancher/klipper-lb:v0.4.9 \
+            -f scripts/riscv64-images/klipper-lb/Dockerfile.riscv64 scripts/riscv64-images/klipper-lb
+          docker buildx build --platform linux/riscv64 --load \
+            --build-arg GOPROXY=https://proxy.golang.org,direct \
+            -t rancher/mirrored-metrics-server:v0.7.2 \
+            -f scripts/riscv64-images/metrics-server/Dockerfile.riscv64 scripts/riscv64-images/metrics-server
+
+      # 1) 交叉编译 k3s-riscv64（Dockerfile.riscv64：tonistiigi/xx + clang 原生交叉，
+      #    在 amd64 runner 上直接产出 linux/riscv64 二进制，含 containerd/runc 自包含数据包）
+      - name: Cross-compile k3s-riscv64
+        run: |
+          docker build -f Dockerfile.riscv64 \
+            --build-arg TARGETARCH=riscv64 \
+            --build-arg GOPROXY=https://proxy.golang.org,direct \
+            -t k3s-riscv64 .
+          docker run --rm -v "$PWD/riscv64-out:/out" k3s-riscv64
+          ls -lh riscv64-out/dist/artifacts/
+
+      # 2) 组装发布资产到 dist/artifacts（官方约定目录）
+      - name: Assemble binary
+        run: |
+          mkdir -p dist/artifacts
+          cp riscv64-out/dist/artifacts/k3s-riscv64 dist/artifacts/
+          file dist/artifacts/k3s-riscv64
+
+      # 3) airgap 镜像包（runner 直连 docker.io，MIRROR 置空；脚本内置
+      #    pause 自建与 rancher 镜像等价重标逻辑，见 scripts/package-airgap-riscv64）
+      - name: Package airgap images
+        run: |
+          MIRROR= ./scripts/package-airgap-riscv64
+          ls -lh dist/artifacts/k3s-airgap-images-riscv64*
+
+      # 4) 镜像清单（同官方 k3s-images.txt，8 镜像全量）
+      - name: Write image list
+        run: |
+          cat > dist/artifacts/k3s-images.txt <<'EOF'
+          docker.io/rancher/local-path-provisioner:v0.0.30
+          docker.io/rancher/mirrored-coredns-coredns:1.11.3
+          docker.io/rancher/mirrored-library-busybox:1.36.1
+          docker.io/rancher/mirrored-library-traefik:2.11.10
+          docker.io/rancher/mirrored-pause:3.6
+          docker.io/rancher/klipper-helm:v0.9.3-build20241008
+          docker.io/rancher/klipper-lb:v0.4.9
+          docker.io/rancher/mirrored-metrics-server:v0.7.2
+          EOF
+
+      # 5) 校验和（同官方 sha256sum-<arch>.txt）
+      - name: Generate checksums
+        run: |
+          cd dist/artifacts
+          sha256sum k3s-riscv64 \
+                    k3s-airgap-images-riscv64.tar \
+                    k3s-airgap-images-riscv64.tar.gz \
+                    k3s-airgap-images-riscv64.tar.zst \
+                    k3s-images.txt > sha256sum-riscv64.txt
+          cat sha256sum-riscv64.txt
+
+      # 6) 创建 Release 并上传资产（对齐 k3s-io/k3s releases 资产命名）
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/release-notes.md <<'EOF'
+          k3s riscv64 发布，基于 v1.28.15+k3s1（官方无 riscv64 支持，本 fork 自建）。
+
+          Airgap 镜像说明（riscv64 生态现状，8 镜像全量）：
+          - rancher/local-path-provisioner:v0.0.30 官方自带 riscv64
+          - coredns/busybox/traefik 用内容等价的官方上游镜像重标为 rancher mirrored 名
+          - pause 官方无 riscv64 变体，用 busybox 自建等效沙箱镜像（重标为 rancher/mirrored-pause:3.6，默认配置即可用）
+          - klipper-helm/klipper-lb/metrics-server 官方无 riscv64 变体，按官方源码自建（scripts/riscv64-images/）：
+            klipper-helm v0.9.3 补丁去 binutils-gold + CGO_ENABLED=0；klipper-lb v0.4.9 原样；
+            metrics-server v0.7.2 交叉编译，runtime 由 distroless 换 alpine
+
+          用法：二进制放入 /usr/local/bin/k3s；airgap 包放入 /var/lib/rancher/k3s/agent/images/ 即可离线安装。
+          EOF
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/artifacts/k3s-riscv64 \
+            dist/artifacts/k3s-airgap-images-riscv64.tar \
+            dist/artifacts/k3s-airgap-images-riscv64.tar.gz \
+            dist/artifacts/k3s-airgap-images-riscv64.tar.zst \
+            dist/artifacts/k3s-images.txt \
+            dist/artifacts/sha256sum-riscv64.txt \
+            --repo "${{ github.repository }}" \
+            --title "${GITHUB_REF_NAME} (riscv64)" \
+            --notes-file /tmp/release-notes.md
