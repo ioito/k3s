@@ -1,0 +1,70 @@
+#!/bin/bash
+# k3s riscv64 airgap 镜像打包脚本（官方 scripts/package-airgap 的 riscv64 适配版）
+#
+# 用法: ./scripts/package-airgap-riscv64
+# 产物: dist/artifacts/k3s-airgap-images-riscv64.tar{,.gz,.zst}
+#
+# 背景与替代方案（2026-09 实测验证）:
+#   rancher 官方 8 镜像中，仅 rancher/local-path-provisioner:v0.0.30 有 riscv64 变体；
+#   coredns / busybox / traefik 的 rancher mirrored 镜像无 riscv64，但官方上游镜像有，
+#   内容与 rancher mirror 等价，重标为 rancher mirrored 名后写入 tar，k3s 清单引用即可命中；
+#   pause 官方（rancher 与 registry.k8s.io 各版本）均无 riscv64，故用 busybox 自建等效
+#   沙箱镜像（CMD sleep infinity）并重标为 rancher/mirrored-pause:3.6，kubelet 默认
+#   沙箱镜像名可直接命中，无需改配置；
+#   klipper-helm / klipper-lb / metrics-server 无 riscv64 变体，未包含：
+#     前两者仅 k3s server 需要（riscv64 建议只作 agent 节点）；
+#     metrics-server 可用 --disable metrics-server 关掉。
+#
+# 网络说明: 默认经 docker.m.daocloud.io 镜像加速拉取（registry-1.docker.io 直连常不通）；
+#   能直连时设 MIRROR= 走官方源。
+set -e
+
+cd "$(dirname "$0")/.."
+. ./scripts/version.sh
+
+export ARCH=riscv64
+DIST=dist/artifacts
+mkdir -p "${DIST}"
+MIRROR=${MIRROR:-docker.m.daocloud.io}
+
+# 从镜像加速(或官方源)拉 riscv64 镜像并重标为 k3s 引用名
+pull_and_tag() {
+    local upstream="$1" target="$2"
+    if [ -n "${MIRROR}" ]; then
+        docker pull --platform linux/riscv64 "${MIRROR}/${upstream}"
+        docker tag "${MIRROR}/${upstream}" "${target}"
+    else
+        docker pull --platform linux/riscv64 "${upstream}"
+        docker tag "${upstream}" "${target}"
+    fi
+}
+
+pull_and_tag rancher/local-path-provisioner:v0.0.30 docker.io/rancher/local-path-provisioner:v0.0.30
+pull_and_tag coredns/coredns:1.11.3                docker.io/rancher/mirrored-coredns-coredns:1.11.3
+pull_and_tag library/busybox:1.36.1                docker.io/rancher/mirrored-library-busybox:1.36.1
+pull_and_tag traefik:2.11.10                       docker.io/rancher/mirrored-library-traefik:2.11.10
+
+# pause: 无官方 riscv64 变体，用 busybox 自建等效沙箱镜像（需 buildx + QEMU 仿真）
+BUILDCTX=$(mktemp -d)
+trap 'rm -rf "${BUILDCTX}"' EXIT
+if [ -n "${MIRROR}" ]; then FROM_IMG="${MIRROR}/library/busybox:1.36.1"; else FROM_IMG="busybox:1.36.1"; fi
+cat > "${BUILDCTX}/Dockerfile" <<EOF
+FROM ${FROM_IMG}
+CMD ["sleep", "infinity"]
+EOF
+docker buildx build --platform linux/riscv64 -t docker.io/rancher/mirrored-pause:3.6 --load "${BUILDCTX}" >/dev/null
+
+# 保存 + 压缩（同官方格式：.tar / .tar.zst / .tar.gz）
+docker save \
+    docker.io/rancher/local-path-provisioner:v0.0.30 \
+    docker.io/rancher/mirrored-coredns-coredns:1.11.3 \
+    docker.io/rancher/mirrored-library-busybox:1.36.1 \
+    docker.io/rancher/mirrored-library-traefik:2.11.10 \
+    docker.io/rancher/mirrored-pause:3.6 \
+    -o "${DIST}/k3s-airgap-images-${ARCH}.tar"
+
+zstd --no-progress -T0 -16 -f --long=25 "${DIST}/k3s-airgap-images-${ARCH}.tar" \
+    -o "${DIST}/k3s-airgap-images-${ARCH}.tar.zst"
+gzip -c "${DIST}/k3s-airgap-images-${ARCH}.tar" > "${DIST}/k3s-airgap-images-${ARCH}.tar.gz"
+
+echo "完成: ${DIST}/k3s-airgap-images-${ARCH}.tar{,.gz,.zst}"
