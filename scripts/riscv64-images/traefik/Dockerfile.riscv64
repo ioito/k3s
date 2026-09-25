@@ -1,0 +1,22 @@
+# traefik v2.10.5 riscv64 构建
+#
+# 官方 traefik:2.10.5 无 riscv64 变体（2.11 起才有），从上游源码自建：
+# 纯 Go（webui 静态资源 embed）+ go build ./cmd/traefik + alpine runtime
+# （官方镜像为 scratch + ca-cert，alpine 自带 ca-certificates 等价）。
+ARG GOLANG=golang:1.22.8-alpine3.19
+FROM --platform=$BUILDPLATFORM ${GOLANG} as build
+WORKDIR /go/src/github.com/traefik/traefik
+ARG PROXY=
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV http_proxy=$PROXY https_proxy=$PROXY HTTP_PROXY=$PROXY HTTPS_PROXY=$PROXY \
+    GOPROXY=$GOPROXY
+RUN apk add -U --no-cache git ca-certificates make \
+ && git -c http.sslVerify=false clone --depth 1 --branch v2.10.5 https://github.com/traefik/traefik . \
+ && CGO_ENABLED=0 GOARCH=riscv64 go build -o dist/traefik ./cmd/traefik
+
+FROM --platform=$TARGETPLATFORM alpine:3.20
+RUN apk add -U --no-cache ca-certificates
+COPY --from=build /go/src/github.com/traefik/traefik/dist/traefik /
+EXPOSE 80
+VOLUME ["/tmp"]
+ENTRYPOINT ["/traefik"]

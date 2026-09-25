@@ -1,0 +1,20 @@
+# local-path-provisioner v0.0.24 riscv64 构建
+#
+# 官方 rancher/local-path-provisioner:v0.0.24 无 riscv64 变体（v0.0.30 起才有），
+# 从上游源码自建：纯 Go 单包 + 源码自带 vendor（离线可构建），
+# CGO_ENABLED=0 交叉编译 + alpine runtime（对齐官方 package/Dockerfile）。
+ARG GOLANG=golang:1.22.8-alpine3.19
+FROM --platform=$BUILDPLATFORM ${GOLANG} as build
+WORKDIR /go/src/github.com/rancher/local-path-provisioner
+ARG PROXY=
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV http_proxy=$PROXY https_proxy=$PROXY HTTP_PROXY=$PROXY HTTPS_PROXY=$PROXY \
+    GOPROXY=$GOPROXY
+RUN apk add -U --no-cache git ca-certificates \
+ && git -c http.sslVerify=false clone --depth 1 --branch v0.0.24 https://github.com/rancher/local-path-provisioner . \
+ && CGO_ENABLED=0 GOARCH=riscv64 go build -o bin/local-path-provisioner .
+
+FROM --platform=$TARGETPLATFORM alpine:3.20
+RUN apk add -U --no-cache ca-certificates
+COPY --from=build /go/src/github.com/rancher/local-path-provisioner/bin/local-path-provisioner /usr/bin/
+CMD ["local-path-provisioner"]

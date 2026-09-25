@@ -27,6 +27,7 @@ permissions:
 
 jobs:
   test:
+    if: github.repository == 'k3s-io/k3s'
     name: Unit Tests
     runs-on: ${{ matrix.os }}
     strategy:

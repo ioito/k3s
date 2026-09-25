@@ -21,8 +21,10 @@ permissions:
   
 jobs:
   build:
+    if: github.repository == 'k3s-io/k3s'
     uses: ./.github/workflows/build-k3s.yaml
   test:
+    if: github.repository == 'k3s-io/k3s'
     name: "Smoke Test"
     needs: build
     runs-on: macos-12

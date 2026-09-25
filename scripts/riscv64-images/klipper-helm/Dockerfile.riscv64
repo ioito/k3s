@@ -1,0 +1,57 @@
+# klipper-helm v0.8.2-build20230815 riscv64 构建
+#
+# 官方流程适配（riscv64 生态差异）：
+#   1) helm v3.12.3 官方无 riscv64 预编译包（get.helm.sh 404）-> 从源码
+#      交叉编译（helm 纯 Go，CGO_ENABLED=0）；helm v2.17.0 同样无 riscv64
+#      且 k3s 只用 helm_v3，故不再打包 helm_v2/tiller
+#   2) 官方 plugins 阶段用 build-base + binutils-gold：alpine riscv64 无
+#      binutils-gold（gold 链接器不支持 riscv64），build-base 的 gcc 在
+#      QEMU 仿真下解压触发 overlay I/O error -> 去掉两者，make 时 CGO_ENABLED=0
+#   3) 插件源码（helm-set-status v0.2.0 / helm-mapkubeapis v0.4.1-k3s1）
+#      官方在容器内 curl github 下载，网络不可靠 -> 本地 COPY 进构建上下文
+FROM --platform=$BUILDPLATFORM golang:1.22.8-alpine3.19 as helm-build
+ARG PROXY=
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV http_proxy=$PROXY https_proxy=$PROXY HTTP_PROXY=$PROXY HTTPS_PROXY=$PROXY \
+    GOPROXY=$GOPROXY
+RUN apk add -U --no-cache git ca-certificates \
+ && git -c http.sslVerify=false clone --depth 1 --branch v3.12.3 https://github.com/helm/helm /go/src/helm.sh/helm/v3 \
+ && cd /go/src/helm.sh/helm/v3 \
+ && CGO_ENABLED=0 GOARCH=riscv64 go build -o /usr/bin/helm ./cmd/helm
+
+FROM --platform=$TARGETPLATFORM alpine:3.20 as extract
+COPY --from=helm-build /usr/bin/helm /usr/bin/helm_v3
+COPY entry /usr/bin/
+
+FROM --platform=$BUILDPLATFORM golang:1.22.8-alpine3.19 as plugins
+ARG PROXY=
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV http_proxy=$PROXY https_proxy=$PROXY HTTP_PROXY=$PROXY HTTPS_PROXY=$PROXY \
+    GOPROXY=$GOPROXY
+RUN apk add -U curl ca-certificates make
+ARG ARCH
+COPY --from=extract /usr/bin/helm_v3 /usr/bin/helm
+COPY plugins-src/helm-set-status /go/src/github.com/k3s-io/helm-set-status
+RUN cd /go/src/github.com/k3s-io/helm-set-status && make CGO_ENABLED=0 GOARCH=riscv64 install
+COPY plugins-src/helm-mapkubeapis /go/src/github.com/helm/helm-mapkubeapis
+RUN cd /go/src/github.com/helm/helm-mapkubeapis && \
+    make CGO_ENABLED=0 GOARCH=riscv64 && \
+    mkdir -p /root/.local/share/helm/plugins/helm-mapkubeapis && \
+    cp -vr plugin.yaml \
+           bin \
+           config \
+           /root/.local/share/helm/plugins/helm-mapkubeapis/
+
+FROM --platform=$TARGETPLATFORM alpine:3.20
+ARG BUILDDATE
+LABEL buildDate=$BUILDDATE
+RUN apk --no-cache upgrade && \
+    apk add -U --no-cache ca-certificates jq bash && \
+    adduser -D -u 1000 -s /bin/bash klipper-helm
+WORKDIR /home/klipper-helm
+COPY --chown=1000:1000 --from=plugins /root/.local/share/helm/plugins/ /home/klipper-helm/.local/share/helm/plugins/
+COPY --from=extract /usr/bin/helm_v3 /usr/bin/entry /usr/bin/
+ENTRYPOINT ["entry"]
+ENV STABLE_REPO_URL=https://charts.helm.sh/stable/
+ENV TIMEOUT=
+USER 1000
